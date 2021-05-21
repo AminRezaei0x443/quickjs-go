@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.4.1)
-
+ 
 project(quickjs C)
 
 option(LEAK_TRIGGER "Add a leak trigger" FALSE)
@@ -45,10 +45,12 @@ endif (LEAK_TRIGGER)
 add_executable(qjsc quickjs/qjsc.c ${QJS_LIB_SOURCES})
 target_compile_options(qjsc PRIVATE ${COMMON_FLAGS})
 set_target_properties(qjsc PROPERTIES OUTPUT_NAME libqjsc.so)
+target_link_libraries(qjsc m ${CMAKE_DL_LIBS} pthread)
 
 add_executable(run-test262 quickjs/run-test262.c ${QJS_LIB_SOURCES})
 target_compile_options(run-test262 PRIVATE ${COMMON_FLAGS})
 set_target_properties(run-test262 PROPERTIES OUTPUT_NAME librun-test262.so)
+target_link_libraries(run-test262 m ${CMAKE_DL_LIBS} pthread)
 
 add_library(quickjs STATIC ${QUICKJS_LIB_SOURCES})
 target_compile_options(quickjs PRIVATE ${COMMON_FLAGS})
