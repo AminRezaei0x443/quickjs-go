@@ -1,4 +1,4 @@
-module github.com/AminRezaei0x443/quickjs-go/v1
+module github.com/AminRezaei0x443/quickjs-go
 
 go 1.15
 
