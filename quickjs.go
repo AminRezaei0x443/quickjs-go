@@ -759,3 +759,9 @@ func (mod *Module) ExportName(name string) {
 func (mod *Module) Ref() unsafe.Pointer {
 	return unsafe.Pointer(mod.ref)
 }
+
+func (ctx *Context) EvaluateFile(name string) int {
+	ptr := C.CString(name)
+	defer C.free(unsafe.Pointer(ptr))
+	return int(C.eval_file(ctx.ref, ptr, -1))
+}
