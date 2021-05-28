@@ -40,6 +40,8 @@ if (LEAK_TRIGGER)
     # Use printf as leak_trigger
     set(COMMON_FLAGS ${COMMON_FLAGS} -Dprintf=leak_trigger)
 endif (LEAK_TRIGGER)
+# To Make so linking in go -buildmode=c-shared work (Build So Extensions with Golang for QJS)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Camouflage executable files as shared libraries to make apk include them
 add_executable(qjsc quickjs/qjsc.c ${QJS_LIB_SOURCES})

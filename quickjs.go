@@ -173,7 +173,9 @@ func NewRuntime() Runtime {
 
 func (r Runtime) RunGC() { C.JS_RunGC(r.ref) }
 
-func (r Runtime) Free() { C.JS_FreeRuntime(r.ref) }
+func (r Runtime) Free() {
+	C.JS_FreeRuntime(r.ref)
+}
 
 func (r Runtime) StdFreeHandlers() {
 	C.js_std_free_handlers(r.ref)
@@ -183,6 +185,15 @@ func (r Runtime) NewContext() *Context {
 	ref := C.NewJsContext(r.ref)
 
 	return &Context{ref: ref}
+}
+
+func WrapContext(ref unsafe.Pointer) *Context {
+	cref := (*C.JSContext)(ref)
+	return &Context{ref: cref}
+}
+func WrapRuntime(ref unsafe.Pointer) *Runtime {
+	cref := (*C.JSRuntime)(ref)
+	return &Runtime{ref: cref}
 }
 
 func (r Runtime) ExecutePendingJob() (Context, error) {
@@ -259,6 +270,18 @@ func (ctx *Context) Free() {
 	}
 
 	C.JS_FreeContext(ctx.ref)
+}
+
+func (ctx *Context) FreeVals() {
+	if ctx.proxy != nil {
+		ctx.proxy.Free()
+	}
+	if ctx.ctorProxy != nil {
+		ctx.ctorProxy.Free()
+	}
+	if ctx.globals != nil {
+		ctx.globals.Free()
+	}
 }
 
 func (ctx *Context) Function(fn Function) Value {
@@ -603,7 +626,8 @@ func (v Value) Set(name string, val Value) {
 }
 
 func (v Value) SetFunction(name string, fn Function) {
-	v.Set(name, v.ctx.Function(fn))
+	fnJ := v.ctx.Function(fn)
+	v.Set(name, fnJ)
 }
 
 type Error struct {
