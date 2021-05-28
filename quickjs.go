@@ -28,6 +28,7 @@ import (
 #include "quickjs-libc.h"
 
 extern JSValue proxy(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
+extern int moduleInitProxy(JSContext *ctx, JSModuleDef* mod);
 
 static JSValue JS_NewNull() { return JS_NULL; }
 static JSValue JS_NewUndefined() { return JS_UNDEFINED; }
@@ -680,4 +681,81 @@ func (v Value) PropertyNames() ([]PropertyEnum, error) {
 	}
 
 	return names, nil
+}
+
+type ModuleInitFn func(ctx *Context, module *Module) int
+type Module struct {
+	ctx    *Context
+	ref    *C.JSModuleDef
+	initFn ModuleInitFn
+}
+
+func storeModulePtr(v *Module) ObjectId {
+	return NewObjectId(v)
+}
+
+func restoreModulePtr(id ObjectId) *Module {
+	if v, ok := id.Get(); ok {
+		if _v, ok := v.(*Module); ok {
+			return _v
+		}
+	}
+
+	return nil
+}
+
+//export moduleInitProxy
+func moduleInitProxy(ctx *C.JSContext, mod *C.JSModuleDef) C.int {
+	meta := C.JS_GetImportMeta(ctx, mod)
+	defer C.JS_FreeValue(ctx, meta)
+	ptr := C.CString("__goModuleId")
+	defer C.free(unsafe.Pointer(ptr))
+	vId := C.JS_GetPropertyStr(ctx, meta, ptr)
+	id := C.int(0)
+	C.JS_ToInt32(ctx, &id, vId)
+	module := restoreModulePtr(ObjectId(id))
+	return C.int(module.initFn(module.ctx, module))
+}
+
+func (ctx *Context) DefineModule(name string, fn ModuleInitFn) *Module {
+	ptr := C.CString(name)
+	defer C.free(unsafe.Pointer(ptr))
+	modRef := C.JS_NewCModule(ctx.ref, ptr, (*C.JSModuleInitFunc)(unsafe.Pointer(C.moduleInitProxy)))
+	module := &Module{
+		ref:    modRef,
+		ctx:    ctx,
+		initFn: fn,
+	}
+	id := storeModulePtr(module)
+	meta := C.JS_GetImportMeta(ctx.ref, modRef)
+	defer C.JS_FreeValue(ctx.ref, meta)
+	ptr2 := C.CString("__goModuleId")
+	defer C.free(unsafe.Pointer(ptr2))
+	idInt := C.JS_NewInt32(ctx.ref, C.int(id))
+	C.JS_SetPropertyStr(ctx.ref, meta, ptr2, idInt)
+
+	return module
+}
+
+func (mod *Module) AddFunction(name string, fn Function) {
+	ptr := C.CString(name)
+	defer C.free(unsafe.Pointer(ptr))
+	jFn := mod.ctx.Function(fn)
+	C.JS_SetModuleExport(mod.ctx.ref, mod.ref, ptr, jFn.ref)
+}
+
+func (mod *Module) AddProperty(name string, v Value) {
+	ptr := C.CString(name)
+	defer C.free(unsafe.Pointer(ptr))
+	C.JS_SetModuleExport(mod.ctx.ref, mod.ref, ptr, v.ref)
+}
+
+func (mod *Module) ExportName(name string) {
+	ptr := C.CString(name)
+	defer C.free(unsafe.Pointer(ptr))
+	C.JS_AddModuleExport(mod.ctx.ref, mod.ref, ptr)
+}
+
+func (mod *Module) Ref() unsafe.Pointer {
+	return unsafe.Pointer(mod.ref)
 }
