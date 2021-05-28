@@ -11,7 +11,8 @@ import (
 /*
 #cgo CFLAGS: -I./3rdparty/include/quickjs
 #cgo linux,!android,386 LDFLAGS: -L${SRCDIR}/3rdparty/libs/quickjs/linux/x86 -lquickjs
-#cgo linux,!android,amd64 LDFLAGS: -L${SRCDIR}/3rdparty/libs/quickjs/linux/x86_64 -lquickjs
+#cgo linux,!android,amd64 LDFLAGS: -L${SRCDIR}/3rdparty/libs/quickjs/Linux -lquickjs
+//#cgo linux,!android,amd64 LDFLAGS: -L${SRCDIR}/3rdparty/libs/quickjs/linux/x86_64 -lquickjs
 #cgo linux,!android LDFLAGS: -lm -ldl -lpthread
 #cgo windows,386 LDFLAGS: -L${SRCDIR}/3rdparty/libs/quickjs/windows/x86 -lquickjs
 #cgo windows,amd64 LDFLAGS: -L${SRCDIR}/3rdparty/libs/quickjs/windows/x86_64 -lquickjs
@@ -29,6 +30,7 @@ import (
 
 extern JSValue proxy(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 extern int moduleInitProxy(JSContext *ctx, JSModuleDef* mod);
+extern void finalizeObjectInstance(JSRuntime* ctx, JSValue value);
 
 static JSValue JS_NewNull() { return JS_NULL; }
 static JSValue JS_NewUndefined() { return JS_UNDEFINED; }
@@ -142,6 +144,13 @@ static JSContext* NewJsContext(JSRuntime *rt) {
 
 	return ctx;
 }
+
+static JSClassDef* NewClassDef(const char* name){
+	JSClassDef* d = malloc(sizeof(JSClassDef));
+	d->class_name = name;
+	d->finalizer = finalizeObjectInstance;
+	return d;
+}
 */
 import "C"
 
@@ -232,14 +241,18 @@ func proxy(ctx *C.JSContext, thisVal C.JSValueConst, argc C.int, argv *C.JSValue
 }
 
 type Context struct {
-	ref     *C.JSContext
-	globals *Value
-	proxy   *Value
+	ref       *C.JSContext
+	globals   *Value
+	proxy     *Value
+	ctorProxy *Value
 }
 
 func (ctx *Context) Free() {
 	if ctx.proxy != nil {
 		ctx.proxy.Free()
+	}
+	if ctx.ctorProxy != nil {
+		ctx.ctorProxy.Free()
 	}
 	if ctx.globals != nil {
 		ctx.globals.Free()
@@ -764,4 +777,141 @@ func (ctx *Context) EvaluateFile(name string) int {
 	ptr := C.CString(name)
 	defer C.free(unsafe.Pointer(ptr))
 	return int(C.eval_file(ctx.ref, ptr, -1))
+}
+
+type FinalizerFn func(rt *Runtime, val Value)
+
+type Class struct {
+	id             ClassId
+	ctx            *Context
+	defRef         *C.JSClassDef
+	proto          *Value
+	finalizer      FinalizerFn
+	definitionCtor *Value
+}
+
+func storeClassPtr(v *Class) ObjectId {
+	return NewObjectId(v)
+}
+
+func restoreClassPtr(id ObjectId) *Class {
+	if v, ok := id.Get(); ok {
+		if _v, ok := v.(*Class); ok {
+			return _v
+		}
+	}
+
+	return nil
+}
+
+//export finalizeObjectInstance
+func finalizeObjectInstance(rt *C.JSRuntime, val C.JSValue) {
+	cId := C.ObjectClassID(val)
+	id := ClassId(cId)
+	cls, ok := id.Get()
+	if !ok {
+		return
+	}
+	v := Value{ctx: cls.ctx, ref: val}
+	if cls.finalizer == nil {
+		return
+	}
+	cls.finalizer(WrapRuntime(unsafe.Pointer(rt)), v)
+}
+
+func newClassId(name string) ClassId {
+	id, ok := FindClassId(name)
+	if ok {
+		return id
+	}
+	var x C.JSClassID
+	C.JS_NewClassID(&x)
+	id = ClassId(x)
+	AddClassId(name, id)
+	return id
+}
+
+func (ctx *Context) Runtime() *Runtime {
+	r := ctx.RuntimeRef()
+	return WrapRuntime(unsafe.Pointer(r))
+}
+func (ctx *Context) RuntimeRef() *C.JSRuntime {
+	return C.JS_GetRuntime(ctx.ref)
+}
+
+func (ctx *Context) NewClass(name string, finalizer FinalizerFn) *Class {
+	id := newClassId(name)
+	cDef := C.NewClassDef(C.CString(name))
+	C.JS_NewClass(ctx.RuntimeRef(), C.uint32_t(id), cDef)
+	proto := ctx.NewObject()
+	cls := &Class{
+		id:        id,
+		ctx:       ctx,
+		defRef:    cDef,
+		finalizer: finalizer,
+		proto:     &proto,
+	}
+	AddClassObject(id, cls)
+	return cls
+}
+
+func (cls *Class) Proto() *Value {
+	return cls.proto
+}
+
+func (cls *Class) Id() ClassId {
+	return cls.id
+}
+
+func (cls *Class) ProtoStabilize() {
+	C.JS_SetClassProto(cls.ctx.ref, C.uint32_t(cls.id), cls.proto.ref)
+}
+
+func (cls *Class) DefConstructor(fn Function) Value {
+	classR := cls.ctx.ConstructorFn(fn)
+	C.JS_SetConstructor(cls.ctx.ref, classR.ref, cls.proto.ref)
+	cls.definitionCtor = &classR
+	return *cls.definitionCtor
+}
+
+func (cls *Class) Free() {
+	cls.proto.Free()
+}
+
+func (ctx *Context) NewObject() Value {
+	return Value{ctx: ctx, ref: C.JS_NewObject(ctx.ref)}
+}
+
+func (cls *Class) NewObject() Value {
+	return Value{ctx: cls.ctx, ref: C.JS_NewObjectProtoClass(cls.ctx.ref, cls.proto.ref, C.uint32_t(cls.id))}
+}
+
+func (v Value) SetOpaque(data unsafe.Pointer) {
+	C.JS_SetOpaque(v.ref, data)
+}
+
+func (v Value) GetOpaque(id ClassId) unsafe.Pointer {
+	return unsafe.Pointer(C.JS_GetOpaque2(v.ctx.ref, v.ref, C.uint32_t(id)))
+}
+
+func (ctx *Context) ConstructorFn(fn Function) Value {
+	val := ctx.eval(`(proxy, id) => function() { return proxy.call(this, id, ...arguments); }`)
+	if val.IsException() {
+		return val
+	}
+	defer val.Free()
+
+	funcPtr := storeFuncPtr(&funcEntry{ctx: ctx, fn: fn})
+	funcPtrVal := ctx.Int64(int64(funcPtr))
+
+	if ctx.ctorProxy == nil {
+		ctx.ctorProxy = &Value{
+			ctx: ctx,
+			ref: C.JS_NewCFunction2(ctx.ref, (*C.JSCFunction)(unsafe.Pointer(C.proxy)), nil, C.int(0), C.JS_CFUNC_generic, C.int(0)),
+		}
+	}
+
+	args := []C.JSValue{ctx.ctorProxy.ref, funcPtrVal.ref}
+
+	return Value{ctx: ctx, ref: C.JS_Call(ctx.ref, val.ref, ctx.Null().ref, C.int(len(args)), &args[0])}
 }
