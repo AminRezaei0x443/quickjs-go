@@ -151,6 +151,7 @@ static JSClassDef* NewClassDef(const char* name){
 	d->finalizer = finalizeObjectInstance;
 	return d;
 }
+extern void freeArrayBuffer(JSRuntime *rt, void *opaque, void *ptr);
 */
 import "C"
 
@@ -938,4 +939,30 @@ func (ctx *Context) ConstructorFn(fn Function) Value {
 	args := []C.JSValue{ctx.ctorProxy.ref, funcPtrVal.ref}
 
 	return Value{ctx: ctx, ref: C.JS_Call(ctx.ref, val.ref, ctx.Null().ref, C.int(len(args)), &args[0])}
+}
+
+func (ctx *Context) NewArrayBuf(b []byte) Value {
+	// TODO: Provide Custom Finalizer Fn
+	buf := (*C.uint8_t)(C.CBytes(b))
+	jsBuf := C.JS_NewArrayBuffer(ctx.ref, buf, C.size_t(len(b)), (*C.JSFreeArrayBufferDataFunc)(unsafe.Pointer(C.freeArrayBuffer)), nil, C.int(0))
+	return Value{
+		ctx: ctx,
+		ref: jsBuf,
+	}
+}
+
+func (ctx *Context) NewArrayBufCopy(b []byte) Value {
+	ptr := C.CBytes(b)
+	buf := (*C.uint8_t)(ptr)
+	defer C.free(ptr)
+	jsBuf := C.JS_NewArrayBufferCopy(ctx.ref, buf, C.size_t(len(b)))
+	return Value{
+		ctx: ctx,
+		ref: jsBuf,
+	}
+}
+
+//export freeArrayBuffer
+func freeArrayBuffer(rt *C.JSRuntime, opaque unsafe.Pointer, ptr unsafe.Pointer) {
+	C.free(ptr)
 }
